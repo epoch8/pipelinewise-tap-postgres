@@ -399,8 +399,8 @@ def main_impl(): # pragma: no cover
     """
     args = parse_args(REQUIRED_CONFIG_KEYS_GROUPS)
 
-    if 'connection_string' in args.config:
-        parsed_conn_str = urllib.parse.urlparse(args.config['connection_string'])
+    if 'connection_uri' in args.config:
+        parsed_conn_str = urllib.parse.urlparse(args.config['connection_uri'])
 
         host = parsed_conn_str.hostname
         dbname = parsed_conn_str.path[1:] # Strip starting "/"
