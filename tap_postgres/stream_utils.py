@@ -85,7 +85,8 @@ def refresh_streams_schema(conn_config: Dict, streams: List[Dict]):
 
         for metadata_element_key in new_discovery_metadata_map:
             if metadata_element_key in original_stream_metadata_map:
-                original_stream_metadata_map[metadata_element_key].update(new_discovery_metadata_map[metadata_element_key])
+                original_stream_metadata_map[metadata_element_key].update(
+                    new_discovery_metadata_map[metadata_element_key])
             else:
                 original_stream_metadata_map[metadata_element_key] = new_discovery_metadata_map[metadata_element_key]
 
