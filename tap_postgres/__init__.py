@@ -400,13 +400,13 @@ def main_impl():
     args = parse_args(REQUIRED_CONFIG_KEYS_GROUPS)
 
     if 'connection_string' in args.config:
-        p = urllib.parse.urlparse(args.config['connection_string'])
+        parsed_conn_str = urllib.parse.urlparse(args.config['connection_string'])
 
-        host = p.hostname
-        dbname = p.path[1:] # Strip starting "/"
-        user = p.username
-        password = p.password
-        port = p.port
+        host = parsed_conn_str.hostname
+        dbname = parsed_conn_str.path[1:] # Strip starting "/"
+        user = parsed_conn_str.username
+        password = parsed_conn_str.password
+        port = parsed_conn_str.port
     else:
         host = args.config['host']
         dbname = args.config['dbname']
