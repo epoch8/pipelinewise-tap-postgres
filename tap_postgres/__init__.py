@@ -393,7 +393,7 @@ def parse_args(required_config_keys):
     return args
 
 
-def main_impl():
+def main_impl(): # pragma: no cover
     """
     Main method
     """
