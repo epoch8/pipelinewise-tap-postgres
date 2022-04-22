@@ -1,6 +1,7 @@
 import argparse
 import itertools
 import copy
+import urllib.parse
 import psycopg2
 import psycopg2.extras
 import psycopg2.extensions
@@ -20,15 +21,21 @@ from tap_postgres.discovery_utils import discover_db
 from tap_postgres.stream_utils import (
     dump_catalog, clear_state_on_replication_change,
     is_selected_via_metadata, refresh_streams_schema, any_logical_streams)
+from tap_postgres.config_utils import check_config_for_key_groups
 
 LOGGER = singer.get_logger('tap_postgres')
 
-REQUIRED_CONFIG_KEYS = [
-    'dbname',
-    'host',
-    'port',
-    'user',
-    'password'
+REQUIRED_CONFIG_KEYS_GROUPS = [
+    [
+        'dbname',
+        'host',
+        'port',
+        'user',
+        'password'
+    ],
+    [
+        'connection_string'
+    ]
 ]
 
 
@@ -381,23 +388,39 @@ def parse_args(required_config_keys):
         setattr(args, 'catalog_path', args.catalog)
         args.catalog = Catalog.load(args.catalog)
 
-    utils.check_config(args.config, required_config_keys)
+    check_config_for_key_groups(args.config, required_config_keys)
 
     return args
 
 
-def main_impl():
+def main_impl(): # pragma: no cover
     """
     Main method
     """
-    args = parse_args(REQUIRED_CONFIG_KEYS)
+    args = parse_args(REQUIRED_CONFIG_KEYS_GROUPS)
+
+    if 'connection_uri' in args.config:
+        parsed_conn_str = urllib.parse.urlparse(args.config['connection_uri'])
+
+        host = parsed_conn_str.hostname
+        dbname = parsed_conn_str.path[1:] # Strip starting "/"
+        user = parsed_conn_str.username
+        password = parsed_conn_str.password
+        port = parsed_conn_str.port
+    else:
+        host = args.config['host']
+        dbname = args.config['dbname']
+        user = args.config['user']
+        password = args.config['password']
+        port = args.config['port']
+
     conn_config = {
         # Required config keys
-        'host': args.config['host'],
-        'user': args.config['user'],
-        'password': args.config['password'],
-        'port': args.config['port'],
-        'dbname': args.config['dbname'],
+        'host': host,
+        'user': user,
+        'password': password,
+        'port': port,
+        'dbname': dbname,
 
         # Optional config keys
         'tap_id': args.config.get('tap_id'),
