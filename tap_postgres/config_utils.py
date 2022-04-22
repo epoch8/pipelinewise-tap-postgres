@@ -15,4 +15,4 @@ def check_config_for_key_groups(config, required_key_groups):
 
     if missing_key_groups:
         missing_keys_msg = " or ".join(str(i) for i in missing_key_groups)
-        raise Exception("Config is missing required keys: {}".format(missing_keys_msg))
+        raise Exception(f"Config is missing required keys: {missing_keys_msg}")
