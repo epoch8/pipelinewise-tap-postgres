@@ -44,7 +44,8 @@ def open_connection(conn_config, logical_replication=False, prioritize_primary=F
         'user': conn_config['user'],
         'password': conn_config['password'],
         'port': conn_config['port'],
-        'connect_timeout': 30
+        # 'connect_timeout': 30
+        'connect_timeout': 120
     }
 
     if conn_config['use_secondary'] and not prioritize_primary and not logical_replication:
