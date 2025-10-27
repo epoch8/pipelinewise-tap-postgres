@@ -15,9 +15,6 @@ LOGGER = singer.get_logger('tap_postgres')
 
 UPDATE_BOOKMARK_PERIOD = 10000
 
-N_RETRIES = 10
-RETRY_SECONDS = 10
-
 
 # pylint: disable=invalid-name,missing-function-docstring
 def fetch_max_replication_key(conn_config, replication_key, schema_name, table_name):
@@ -65,81 +62,61 @@ def sync_table(conn_info, stream, state, desired_columns, md_map):
 
     hstore_available = post_db.hstore_available(conn_info)
     with metrics.record_counter(None) as counter:
-        n_retries = N_RETRIES
+        with post_db.open_connection(conn_info) as conn:
 
-        while n_retries > 0:
-            try:
-                with post_db.open_connection(conn_info) as conn:
+            # Client side character encoding defaults to the value in postgresql.conf under client_encoding.
+            # The server / db can also have its own configured encoding.
+            with conn.cursor() as cur:
+                cur.execute("show server_encoding")
+                LOGGER.info("Current Server Encoding: %s", cur.fetchone()[0])
+                cur.execute("show client_encoding")
+                LOGGER.info("Current Client Encoding: %s", cur.fetchone()[0])
 
-                    # Client side character encoding defaults to the value in postgresql.conf under client_encoding.
-                    # The server / db can also have its own configured encoding.
-                    with conn.cursor() as cur:
-                        cur.execute("show server_encoding")
-                        LOGGER.info("Current Server Encoding: %s", cur.fetchone()[0])
-                        cur.execute("show client_encoding")
-                        LOGGER.info("Current Client Encoding: %s", cur.fetchone()[0])
+            if hstore_available:
+                LOGGER.info("hstore is available")
+                psycopg2.extras.register_hstore(conn)
+            else:
+                LOGGER.info("hstore is UNavailable")
 
-                    if hstore_available:
-                        LOGGER.info("hstore is available")
-                        psycopg2.extras.register_hstore(conn)
-                    else:
-                        LOGGER.info("hstore is UNavailable")
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor, name='pipelinewise') as cur:
+                cur.itersize = post_db.CURSOR_ITER_SIZE
+                LOGGER.info("Beginning new incremental replication sync %s", stream_version)
+                select_sql = _get_select_sql({"escaped_columns": escaped_columns,
+                                              "replication_key": replication_key,
+                                              "replication_key_sql_datatype": replication_key_sql_datatype,
+                                              "replication_key_value": replication_key_value,
+                                              "schema_name": schema_name,
+                                              "table_name": stream['table_name'],
+                                              "limit": conn_info['limit']
+                                              })
+                LOGGER.info('select statement: %s with itersize %s', select_sql, cur.itersize)
+                cur.execute(select_sql)
 
-                    with conn.cursor(cursor_factory=psycopg2.extras.DictCursor, name='pipelinewise') as cur:
-                        cur.itersize = post_db.CURSOR_ITER_SIZE
-                        LOGGER.info("Beginning new incremental replication sync %s", stream_version)
-                        select_sql = _get_select_sql({"escaped_columns": escaped_columns,
-                                                    "replication_key": replication_key,
-                                                    "replication_key_sql_datatype": replication_key_sql_datatype,
-                                                    "replication_key_value": replication_key_value,
-                                                    "schema_name": schema_name,
-                                                    "table_name": stream['table_name'],
-                                                    "limit": conn_info['limit']
-                                                    })
-                        LOGGER.info('select statement: %s with itersize %s', select_sql, cur.itersize)
-                        cur.execute(select_sql)
+                rows_saved = 0
 
-                        rows_saved = 0
+                for rec in cur:
+                    record_message = post_db.selected_row_to_singer_message(stream,
+                                                                            rec,
+                                                                            stream_version,
+                                                                            desired_columns,
+                                                                            time_extracted,
+                                                                            md_map)
 
-                        for rec in cur:
-                            record_message = post_db.selected_row_to_singer_message(stream,
-                                                                                    rec,
-                                                                                    stream_version,
-                                                                                    desired_columns,
-                                                                                    time_extracted,
-                                                                                    md_map)
+                    singer.write_message(record_message)
+                    rows_saved += 1
 
-                            singer.write_message(record_message)
-                            rows_saved += 1
+                    #Picking a replication_key with NULL values will result in it ALWAYS been synced which is not great
+                    #event worse would be allowing the NULL value to enter into the state
+                    if record_message.record[replication_key] is not None:
+                        state = singer.write_bookmark(state,
+                                                      stream['tap_stream_id'],
+                                                      'replication_key_value',
+                                                      record_message.record[replication_key])
 
-                            #Picking a replication_key with NULL values will result in it ALWAYS been synced which is not great
-                            #event worse would be allowing the NULL value to enter into the state
-                            try:
-                                if record_message.record[replication_key] is not None:
-                                    state = singer.write_bookmark(state,
-                                                                stream['tap_stream_id'],
-                                                                'replication_key_value',
-                                                                record_message.record[replication_key])
-                            except Exception as erros:
-                                LOGGER.error(error_message)
-                                LOGGER.error(record_message.record)
-                                LOGGER.error(rec)
+                    if rows_saved % UPDATE_BOOKMARK_PERIOD == 0:
+                        singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
 
-                            if rows_saved % UPDATE_BOOKMARK_PERIOD == 0:
-                                singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
-
-                            counter.increment()
-                
-                    n_retries = 0
-
-            except (psycopg2.OperationalError, psycopg2.InterfaceError) as error:
-                n_retries = n_retries - 1
-                error_message = f"Retry after {RETRY_SECONDS} second(s), retries left {n_retries}, error occurred:\n{error}"
-                LOGGER.error(error_message)
-                time.sleep(RETRY_SECONDS)
-
-                if n_retries == 0:
-                    raise Exception(error_message)
+                    counter.increment()
 
     return state
 
