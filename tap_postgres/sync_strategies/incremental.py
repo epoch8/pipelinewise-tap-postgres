@@ -63,7 +63,7 @@ def sync_table(conn_info, stream, state, desired_columns, md_map):
     hstore_available = post_db.hstore_available(conn_info)
     with metrics.record_counter(None) as counter:
         with post_db.open_connection(conn_info) as conn:
-            
+
             # Set connection to autocommit
             conn.autocommit = True
 
@@ -81,7 +81,7 @@ def sync_table(conn_info, stream, state, desired_columns, md_map):
             else:
                 LOGGER.info("hstore is UNavailable")
 
-            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor, name='pipelinewise') as cur:
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor, name='pipelinewise', withhold=True) as cur:
                 cur.itersize = post_db.CURSOR_ITER_SIZE
                 LOGGER.info("Beginning new incremental replication sync %s", stream_version)
                 select_sql = _get_select_sql({"escaped_columns": escaped_columns,
