@@ -63,6 +63,9 @@ def sync_table(conn_info, stream, state, desired_columns, md_map):
     hstore_available = post_db.hstore_available(conn_info)
     with metrics.record_counter(None) as counter:
         with post_db.open_connection(conn_info) as conn:
+            
+            # Set connection to autocommit
+            conn.autocommit = True
 
             # Client side character encoding defaults to the value in postgresql.conf under client_encoding.
             # The server / db can also have its own configured encoding.
