@@ -25,9 +25,14 @@ def send_schema_message(stream, bookmark_properties):
     else:
         key_properties = s_md.get((), {}).get('table-key-properties', [])
 
+    # do not announce columns that are not selected, otherwise targets would try to create them
+    schema = dict(stream['schema'])
+    schema['properties'] = {name: prop for name, prop in stream['schema'].get('properties', {}).items()
+                            if should_sync_column(s_md, name)}
+
     schema_message = {'type' : 'SCHEMA',
                       'stream' : post_db.calculate_destination_stream_name(stream, s_md),
-                      'schema' : stream['schema'],
+                      'schema' : schema,
                       'key_properties' : key_properties,
                       'bookmark_properties': bookmark_properties}
 
