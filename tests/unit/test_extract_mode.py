@@ -79,35 +79,55 @@ class TestExtractMode(TestCase):
         self.assertEqual(lookup['public-t'], 'logical_initial_interrupted')
 
     def test_fetch_all_retries_recovery_conflict(self):
-        class ConflictCursor:
-            def __init__(self):
-                self.calls = 0
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-            def execute(self, sql, params=None):
-                self.calls += 1
-                if self.calls == 1:
-                    raise psycopg2.errors.SerializationFailure('canceling statement due to conflict with recovery')
-
-            def fetchall(self):
-                return [(1,)]
-
-        cursor = ConflictCursor()
-
         class ConflictConnection:
-            def cursor(self, **kwargs):
-                return cursor
+            """Fails the first statement and stays aborted until rollback, as Postgres does."""
 
+            def __init__(self):
+                self.aborted = False
+                self.autocommit = True
+                self.rollbacks = 0
+                self.cursor_impl = self.ConflictCursor(self)
+
+            class ConflictCursor:
+                def __init__(self, conn):
+                    self.conn = conn
+                    self.calls = 0
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return False
+
+                def execute(self, sql, params=None):
+                    if self.conn.aborted:
+                        raise psycopg2.errors.InFailedSqlTransaction(
+                            'current transaction is aborted, commands ignored until end of transaction block')
+                    self.calls += 1
+                    if self.calls == 1:
+                        self.conn.aborted = True
+                        raise psycopg2.errors.SerializationFailure(
+                            'canceling statement due to conflict with recovery')
+
+                def fetchall(self):
+                    return [(1,)]
+
+            def cursor(self, **kwargs):
+                return self.cursor_impl
+
+            def rollback(self):
+                self.rollbacks += 1
+                self.aborted = False
+
+        conn = ConflictConnection()
         with patch('tap_postgres.db.time.sleep') as sleep:
-            rows = post_db.fetch_all(ConflictConnection(), 'SELECT 1')
+            rows = post_db.fetch_all(conn, 'SELECT 1')
 
         self.assertEqual(rows, [(1,)])
-        self.assertEqual(cursor.calls, 2)
+        self.assertEqual(conn.cursor_impl.calls, 2)
+        self.assertEqual(conn.rollbacks, 1)
+        self.assertTrue(conn.autocommit)
+        self.assertFalse(conn.aborted)
         sleep.assert_called_once()
 
     @patch('tap_postgres.sync_strategies.incremental.post_db.hstore_available', return_value=False)

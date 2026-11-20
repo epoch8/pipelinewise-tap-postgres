@@ -24,12 +24,34 @@ def extract_mode(conn_config):
     return conn_config.get('extract_mode', 'cursor')
 
 
+def _is_recovery_conflict(err):
+    # 40001 is serialization_failure. Postgres uses it when recovery cancels a query.
+    return getattr(err, 'pgcode', None) == '40001' or err.__class__.__name__ == 'SerializationFailure'
+
+
+def _rollback_aborted_transaction(conn):
+    """Clear a failed transaction so the next statement is not rejected.
+
+    A serialization failure aborts the current transaction. psycopg2 keeps that
+    state even when autocommit is on, and the following command fails with
+    InFailedSqlTransaction until ROLLBACK. rollback() itself is refused while
+    autocommit is enabled, so turn it off for the rollback only.
+    """
+    was_autocommit = getattr(conn, 'autocommit', False)
+    try:
+        if was_autocommit:
+            conn.autocommit = False
+        conn.rollback()
+    finally:
+        if was_autocommit:
+            conn.autocommit = True
+
+
 def fetch_all(conn, sql, params=None):
     """Run one statement and return every row.
 
     An unnamed cursor finishes on the server before the caller emits records, so a
-    replica can drop the snapshot. SerializationFailure is the recovery-conflict
-    cancel and is safe to retry for these read-only statements.
+    replica can drop the snapshot. A recovery-conflict cancel is safe to retry.
     """
     for attempt in range(1, QUERY_RETRY_ATTEMPTS + 1):
         try:
@@ -38,12 +60,11 @@ def fetch_all(conn, sql, params=None):
                 cur.execute(sql, params)
                 return cur.fetchall()
         except psycopg2.Error as err:
-            # 40001 is serialization_failure, which Postgres uses for recovery conflicts.
-            conflict = getattr(err, 'pgcode', None) == '40001' or err.__class__.__name__ == 'SerializationFailure'
-            if not conflict:
+            if not _is_recovery_conflict(err):
                 raise
             if attempt == QUERY_RETRY_ATTEMPTS:
                 raise
+            _rollback_aborted_transaction(conn)
             delay = min(2 ** (attempt - 1), 30)
             LOGGER.warning('recovery conflict, retrying query in %s seconds (%s/%s)',
                            delay, attempt, QUERY_RETRY_ATTEMPTS)
