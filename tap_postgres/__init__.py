@@ -100,6 +100,13 @@ def _extract_mode(config):
     return mode
 
 
+def _query_retries(config):
+    retries = int(config.get('query_retries', post_db.QUERY_RETRIES))
+    if retries < 0:
+        raise ValueError('query_retries must be greater than or equal to 0')
+    return retries
+
+
 def sync_method_for_streams(streams, state, default_replication_method):
     """
 	Determines the replication method of each stream
@@ -444,6 +451,7 @@ def main_impl():
         conn_config['sslmode'] = 'require'
 
     post_db.CURSOR_ITER_SIZE = int(args.config.get('itersize', post_db.CURSOR_ITER_SIZE))
+    post_db.QUERY_RETRIES = _query_retries(args.config)
 
     if args.discover:
         do_discovery(conn_config)

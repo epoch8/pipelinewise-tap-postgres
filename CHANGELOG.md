@@ -2,6 +2,7 @@ Unreleased
 -------------------
 **Changes**
 - Add `extract_mode` (`cursor` or `query`). `query` reads `INCREMENTAL` and `FULL_TABLE` as short committed queries so a replica snapshot is not held for the whole sync.
+- Add `query_retries` for how many times a `query` page is retried after a replica recovery conflict.
 
 2.1.0 (2023-03-30)
 -------------------

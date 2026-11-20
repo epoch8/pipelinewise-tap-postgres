@@ -16,7 +16,7 @@ LOGGER = singer.get_logger('tap_postgres')
 
 CURSOR_ITER_SIZE = 20000
 EXTRACT_MODES = ('cursor', 'query')
-QUERY_RETRY_ATTEMPTS = 5
+QUERY_RETRIES = 5
 
 
 def extract_mode(conn_config):
@@ -50,7 +50,7 @@ def fetch_all(conn, sql, params=None):
     The statement is committed before return, so a replica can drop the snapshot
     before the caller emits records. A recovery-conflict cancel is safe to retry.
     """
-    for attempt in range(1, QUERY_RETRY_ATTEMPTS + 1):
+    for attempt in range(QUERY_RETRIES + 1):
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
                 LOGGER.info('select statement: %s params %s', sql, params)
@@ -59,14 +59,12 @@ def fetch_all(conn, sql, params=None):
             _finish_query_transaction(conn, rollback=False)
             return rows
         except psycopg2.Error as err:
-            if not _is_recovery_conflict(err):
-                raise
-            if attempt == QUERY_RETRY_ATTEMPTS:
+            if not _is_recovery_conflict(err) or attempt == QUERY_RETRIES:
                 raise
             _finish_query_transaction(conn, rollback=True)
-            delay = min(2 ** (attempt - 1), 30)
+            delay = min(2 ** attempt, 30)
             LOGGER.warning('recovery conflict, retrying query in %s seconds (%s/%s)',
-                           delay, attempt, QUERY_RETRY_ATTEMPTS)
+                           delay, attempt + 1, QUERY_RETRIES)
             time.sleep(delay)
     raise psycopg2.OperationalError('recovery conflict retries exhausted')
 

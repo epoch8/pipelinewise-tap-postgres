@@ -67,6 +67,10 @@ class TestExtractMode(TestCase):
         self.assertEqual(tap_postgres._extract_mode({'extract_mode': 'query'}), 'query')
         with self.assertRaises(ValueError):
             tap_postgres._extract_mode({'extract_mode': 'stream'})
+        self.assertEqual(tap_postgres._query_retries({}), 5)
+        self.assertEqual(tap_postgres._query_retries({'query_retries': 0}), 0)
+        with self.assertRaises(ValueError):
+            tap_postgres._query_retries({'query_retries': -1})
 
     def test_query_pk_resumes_interrupted_logical_initial_sync(self):
         stream = {
@@ -153,6 +157,34 @@ class TestExtractMode(TestCase):
         self.assertTrue(conn.autocommit)
         self.assertFalse(conn.aborted)
         sleep.assert_called_once()
+
+    def test_query_retries_zero_does_not_retry(self):
+        class FailingCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def execute(self, sql, params=None):
+                raise psycopg2.errors.SerializationFailure('canceling statement due to conflict with recovery')
+
+        class FailingConnection:
+            def cursor(self, **kwargs):
+                return FailingCursor()
+
+            def rollback(self):
+                raise AssertionError('rollback is not used when query_retries is 0')
+
+        original_retries = post_db.QUERY_RETRIES
+        post_db.QUERY_RETRIES = 0
+        try:
+            with patch('tap_postgres.db.time.sleep') as sleep:
+                with self.assertRaises(psycopg2.errors.SerializationFailure):
+                    post_db.fetch_all(FailingConnection(), 'SELECT 1')
+        finally:
+            post_db.QUERY_RETRIES = original_retries
+        sleep.assert_not_called()
 
     @patch('tap_postgres.sync_strategies.incremental.post_db.hstore_available', return_value=False)
     @patch('tap_postgres.sync_strategies.incremental.post_db.open_connection')
