@@ -3,6 +3,7 @@ import datetime
 import json
 import decimal
 import math
+import time
 import pytz
 import psycopg2
 import psycopg2.extras
@@ -14,6 +15,40 @@ from dateutil.parser import parse
 LOGGER = singer.get_logger('tap_postgres')
 
 CURSOR_ITER_SIZE = 20000
+EXTRACT_MODES = ('cursor', 'query')
+QUERY_RETRY_ATTEMPTS = 5
+
+
+def extract_mode(conn_config):
+    """How INCREMENTAL and FULL_TABLE read rows. `query` avoids a long replica snapshot."""
+    return conn_config.get('extract_mode', 'cursor')
+
+
+def fetch_all(conn, sql, params=None):
+    """Run one statement and return every row.
+
+    An unnamed cursor finishes on the server before the caller emits records, so a
+    replica can drop the snapshot. SerializationFailure is the recovery-conflict
+    cancel and is safe to retry for these read-only statements.
+    """
+    for attempt in range(1, QUERY_RETRY_ATTEMPTS + 1):
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                LOGGER.info('select statement: %s params %s', sql, params)
+                cur.execute(sql, params)
+                return cur.fetchall()
+        except psycopg2.Error as err:
+            # 40001 is serialization_failure, which Postgres uses for recovery conflicts.
+            conflict = getattr(err, 'pgcode', None) == '40001' or err.__class__.__name__ == 'SerializationFailure'
+            if not conflict:
+                raise
+            if attempt == QUERY_RETRY_ATTEMPTS:
+                raise
+            delay = min(2 ** (attempt - 1), 30)
+            LOGGER.warning('recovery conflict, retrying query in %s seconds (%s/%s)',
+                           delay, attempt, QUERY_RETRY_ATTEMPTS)
+            time.sleep(delay)
+    raise psycopg2.OperationalError('recovery conflict retries exhausted')
 
 
 # pylint: disable=invalid-name,missing-function-docstring

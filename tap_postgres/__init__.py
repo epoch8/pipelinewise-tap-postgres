@@ -76,7 +76,7 @@ def do_sync_incremental(conn_config, stream, state, desired_columns, md_map):
 
     stream_state = state.get('bookmarks', {}).get(stream['tap_stream_id'])
     illegal_bk_keys = set(stream_state.keys()).difference(
-        {'replication_key', 'replication_key_value', 'version', 'last_replication_method'})
+        {'replication_key', 'replication_key_value', 'version', 'last_replication_method', 'query_pk_value'})
     if len(illegal_bk_keys) != 0:
         raise Exception(f"invalid keys found in state: {illegal_bk_keys}")
 
@@ -86,6 +86,18 @@ def do_sync_incremental(conn_config, stream, state, desired_columns, md_map):
     state = incremental.sync_table(conn_config, stream, state, desired_columns, md_map)
 
     return state
+
+
+def _has_full_table_bookmark(state, tap_stream_id):
+    """True when a FULL_TABLE or logical-initial sync still has a resume point."""
+    return bool(get_bookmark(state, tap_stream_id, 'xmin') or get_bookmark(state, tap_stream_id, 'query_pk_value'))
+
+
+def _extract_mode(config):
+    mode = config.get('extract_mode', 'cursor')
+    if mode not in post_db.EXTRACT_MODES:
+        raise ValueError(f"extract_mode must be one of {post_db.EXTRACT_MODES}")
+    return mode
 
 
 def sync_method_for_streams(streams, state, default_replication_method):
@@ -126,18 +138,19 @@ def sync_method_for_streams(streams, state, default_replication_method):
             lookup[stream['tap_stream_id']] = 'incremental'
             traditional_steams.append(stream)
 
-        elif get_bookmark(state, stream['tap_stream_id'], 'xmin') and \
+        elif _has_full_table_bookmark(state, stream['tap_stream_id']) and \
                 get_bookmark(state, stream['tap_stream_id'], 'lsn'):
             # finishing previously interrupted full-table (first stage of logical replication)
             lookup[stream['tap_stream_id']] = 'logical_initial_interrupted'
             traditional_steams.append(stream)
 
         # inconsistent state
-        elif get_bookmark(state, stream['tap_stream_id'], 'xmin') and \
+        elif _has_full_table_bookmark(state, stream['tap_stream_id']) and \
                 not get_bookmark(state, stream['tap_stream_id'], 'lsn'):
-            raise Exception("Xmin found(%s) in state implying full-table replication but no lsn is present")
+            raise Exception(f"Full table resume bookmark found for {stream['tap_stream_id']} "
+                            f"but no lsn is present")
 
-        elif not get_bookmark(state, stream['tap_stream_id'], 'xmin') and \
+        elif not _has_full_table_bookmark(state, stream['tap_stream_id']) and \
                 not get_bookmark(state, stream['tap_stream_id'], 'lsn'):
             # initial full-table phase of logical replication
             lookup[stream['tap_stream_id']] = 'logical_initial'
@@ -181,6 +194,8 @@ def sync_traditional_stream(conn_config, stream, state, sync_method, end_lsn):
         sync_common.send_schema_message(stream, [])
         state = full_table.sync_table(conn_config, stream, state, desired_columns, md_map)
         state = singer.write_bookmark(state, stream['tap_stream_id'], 'xmin', None)
+        if get_bookmark(state, stream['tap_stream_id'], 'query_pk_value') is not None:
+            state = singer.write_bookmark(state, stream['tap_stream_id'], 'query_pk_value', None)
     elif sync_method == 'logical_initial_interrupted':
         state = singer.set_currently_syncing(state, stream['tap_stream_id'])
         LOGGER.info("Initial stage of full table sync was interrupted. resuming...")
@@ -409,7 +424,8 @@ def main_impl():
         'break_at_end_lsn': args.config.get('break_at_end_lsn', True),
         'logical_poll_total_seconds': float(args.config.get('logical_poll_total_seconds', 0)),
         'use_secondary': args.config.get('use_secondary', False),
-        'limit': int(limit) if limit else None
+        'limit': int(limit) if limit else None,
+        'extract_mode': _extract_mode(args.config),
     }
 
     if conn_config['use_secondary']:
