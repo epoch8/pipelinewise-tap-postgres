@@ -29,42 +29,41 @@ def _is_recovery_conflict(err):
     return getattr(err, 'pgcode', None) == '40001' or err.__class__.__name__ == 'SerializationFailure'
 
 
-def _rollback_aborted_transaction(conn):
-    """Clear a failed transaction so the next statement is not rejected.
+def _finish_query_transaction(conn, rollback):
+    """End the transaction opened by `with connection`.
 
-    A serialization failure aborts the current transaction. psycopg2 keeps that
-    state even when autocommit is on, and the following command fails with
-    InFailedSqlTransaction until ROLLBACK. rollback() itself is refused while
-    autocommit is enabled, so turn it off for the rollback only.
+    psycopg2 begins a transaction for the whole `with` block even when autocommit
+    is on. A recovery conflict aborts it, and the next statement is rejected until
+    ROLLBACK. A successful page must COMMIT before rows are emitted, or the
+    snapshot stays open while the caller writes them. Changing autocommit here
+    calls set_session and fails while that transaction is open.
     """
-    was_autocommit = getattr(conn, 'autocommit', False)
-    try:
-        if was_autocommit:
-            conn.autocommit = False
+    if rollback:
         conn.rollback()
-    finally:
-        if was_autocommit:
-            conn.autocommit = True
+    else:
+        conn.commit()
 
 
 def fetch_all(conn, sql, params=None):
     """Run one statement and return every row.
 
-    An unnamed cursor finishes on the server before the caller emits records, so a
-    replica can drop the snapshot. A recovery-conflict cancel is safe to retry.
+    The statement is committed before return, so a replica can drop the snapshot
+    before the caller emits records. A recovery-conflict cancel is safe to retry.
     """
     for attempt in range(1, QUERY_RETRY_ATTEMPTS + 1):
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
                 LOGGER.info('select statement: %s params %s', sql, params)
                 cur.execute(sql, params)
-                return cur.fetchall()
+                rows = cur.fetchall()
+            _finish_query_transaction(conn, rollback=False)
+            return rows
         except psycopg2.Error as err:
             if not _is_recovery_conflict(err):
                 raise
             if attempt == QUERY_RETRY_ATTEMPTS:
                 raise
-            _rollback_aborted_transaction(conn)
+            _finish_query_transaction(conn, rollback=True)
             delay = min(2 ** (attempt - 1), 30)
             LOGGER.warning('recovery conflict, retrying query in %s seconds (%s/%s)',
                            delay, attempt, QUERY_RETRY_ATTEMPTS)

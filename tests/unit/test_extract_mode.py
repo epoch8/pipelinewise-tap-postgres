@@ -40,6 +40,13 @@ class RecordingConnection:
         self.statements = []
         self.cursor_names = []
         self.autocommit = False
+        self.commits = 0
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        pass
 
     def cursor(self, name=None, **kwargs):
         self.cursor_names.append(name)
@@ -84,9 +91,20 @@ class TestExtractMode(TestCase):
 
             def __init__(self):
                 self.aborted = False
-                self.autocommit = True
+                self._autocommit = True
                 self.rollbacks = 0
+                self.commits = 0
                 self.cursor_impl = self.ConflictCursor(self)
+
+            @property
+            def autocommit(self):
+                return self._autocommit
+
+            @autocommit.setter
+            def autocommit(self, value):
+                if self.aborted:
+                    raise psycopg2.ProgrammingError('set_session cannot be used inside a transaction')
+                self._autocommit = value
 
             class ConflictCursor:
                 def __init__(self, conn):
@@ -119,6 +137,11 @@ class TestExtractMode(TestCase):
                 self.rollbacks += 1
                 self.aborted = False
 
+            def commit(self):
+                if self.aborted:
+                    raise psycopg2.ProgrammingError('commit cannot be used inside an aborted transaction')
+                self.commits += 1
+
         conn = ConflictConnection()
         with patch('tap_postgres.db.time.sleep') as sleep:
             rows = post_db.fetch_all(conn, 'SELECT 1')
@@ -126,6 +149,7 @@ class TestExtractMode(TestCase):
         self.assertEqual(rows, [(1,)])
         self.assertEqual(conn.cursor_impl.calls, 2)
         self.assertEqual(conn.rollbacks, 1)
+        self.assertEqual(conn.commits, 1)
         self.assertTrue(conn.autocommit)
         self.assertFalse(conn.aborted)
         sleep.assert_called_once()
