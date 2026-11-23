@@ -88,8 +88,17 @@ def refresh_streams_schema(conn_config: Dict, streams: List[Dict]):
 
             for idx_met, metadatum in enumerate(new_discovery[stream['tap_stream_id']]['metadata']):
                 if not metadatum['breadcrumb']:
-                    meta.update(new_discovery[stream['tap_stream_id']]['metadata'][idx_met]['metadata'])
-                    new_discovery[stream['tap_stream_id']]['metadata'][idx_met]['metadata'] = meta
+                    # Views have no Postgres primary key, so discovery writes an empty list.
+                    # Keep a key list already set in the catalog, such as Meltano table-key-properties.
+                    discovered_meta = metadatum['metadata']
+                    user_table_keys = meta.get('table-key-properties') or []
+                    user_view_keys = meta.get('view-key-properties') or []
+                    meta.update(discovered_meta)
+                    if user_table_keys and not (discovered_meta.get('table-key-properties') or []):
+                        meta['table-key-properties'] = user_table_keys
+                    if user_view_keys and not (discovered_meta.get('view-key-properties') or []):
+                        meta['view-key-properties'] = user_view_keys
+                    metadatum['metadata'] = meta
                 elif 'selected' in md_map.get(tuple(metadatum['breadcrumb']), {}):
                     # keep column level selection, otherwise every column falls back to selected-by-default
                     metadatum['metadata']['selected'] = md_map[tuple(metadatum['breadcrumb'])]['selected']

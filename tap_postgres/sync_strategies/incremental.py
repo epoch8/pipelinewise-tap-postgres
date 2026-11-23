@@ -137,9 +137,11 @@ def sync_table(conn_info, stream, state, desired_columns, md_map):
 
 
 def _keyset_columns(replication_key, md_map):
-    """Replication key, then primary-key columns that are not already the replication key."""
+    """Replication key, then key columns that are not already the replication key."""
+    table_md = md_map.get((), {})
+    key_properties = table_md.get('table-key-properties') or table_md.get('view-key-properties') or []
     columns = [replication_key]
-    for column in md_map.get((), {}).get('table-key-properties') or []:
+    for column in key_properties:
         if column not in columns:
             columns.append(column)
     return columns

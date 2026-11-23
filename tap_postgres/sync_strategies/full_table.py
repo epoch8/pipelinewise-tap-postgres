@@ -19,8 +19,8 @@ QUERY_PK_BOOKMARK = 'query_pk_value'
 def _key_columns(md_map, is_view):
     table_md = md_map.get((), {})
     if is_view:
-        return list(table_md.get('view-key-properties') or [])
-    return list(table_md.get('table-key-properties') or [])
+        return list(table_md.get('view-key-properties') or table_md.get('table-key-properties') or [])
+    return list(table_md.get('table-key-properties') or table_md.get('view-key-properties') or [])
 
 
 def _sql_datatype(md_map, column):
