@@ -239,6 +239,10 @@ def sync_table(conn_info, stream, state, desired_columns, md_map):
     hstore_available = post_db.hstore_available(conn_info)
     with metrics.record_counter(None) as counter:
         with post_db.open_connection(conn_info) as conn:
+            # Set this before any statement. `with connection` is already a transaction
+            # context, and set_session fails once a statement has begun it.
+            if query_mode:
+                conn.autocommit = True
 
             # Client side character encoding defaults to the value in postgresql.conf under client_encoding.
             # The server / db can also have its own configred encoding.
@@ -255,7 +259,6 @@ def sync_table(conn_info, stream, state, desired_columns, md_map):
                 LOGGER.info("hstore is UNavailable")
 
             if query_mode:
-                conn.autocommit = True
                 select_expressions = list(
                     map(partial(post_db.prepare_columns_for_select_sql, md_map=md_map), desired_columns))
                 state = _sync_queries(conn, stream, state, desired_columns, select_expressions, md_map, schema_name,
